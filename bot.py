@@ -11,15 +11,20 @@ from telegram.ext import (
     filters
 )
 
+from pymongo import MongoClient
+import google.generativeai as genai
 
 # Load environment variables from .env file
 load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_API_TOKEN")
 MONGOOSE_KEY = os.getenv("MONGOOSE_KEY")
+GOOGLE_API_KEY = os.getenv("GEMINI_API_KEY")
 
+# Initialize Gemini
+genai.configure(api_key=GOOGLE_API_KEY)
+model = genai.GenerativeModel('gemini-pro')
 
-from pymongo import MongoClient
 
 uri = "mongodb+srv://admin:" + MONGOOSE_KEY + "@messages.5xaf5.mongodb.net/?retryWrites=true&w=majority&appName=messages"
 
@@ -189,11 +194,14 @@ async def selected_channels(update, context):
     await context.bot.send_message(chat_id, " ".join([s for s in selected_channels]))
 
 
+previous_tags = [] 
+
 async def store_channel_message(update, context):
     """
     Whenever a new message is posted in a channel, store it in MongoDB.
     """
-    print()
+
+    print(previous_tags)
 
     if update.channel_post:
         post = update.channel_post
@@ -201,12 +209,18 @@ async def store_channel_message(update, context):
         text = post.text or ""  # message text (if any)
         date = post.date        # datetime object (UTC)
 
+        tag = tag_message(text, previous_tags)
+
         # Build the document
         doc = {
             "channel_name": channel_name,
             "text": text,
-            "date": date
+            "date": date,
+            "tag": tag
         }
+
+        if (tag not in previous_tags):
+            previous_tags.append(tag)
 
         # Insert the document into your Mongo collection
         result = collection.insert_one(doc)
@@ -215,6 +229,58 @@ async def store_channel_message(update, context):
             "Inserted new message from channel %s (message_id=%s) into MongoDB with _id=%s",
             channel_name, post.message_id, result.inserted_id
         )
+
+
+
+
+def tag_message(message, previous_tags=None):
+    """
+    Tags a text message with a relevant topic using Gemini.
+
+    Args:
+        message (str): The text message to tag.
+        previous_tags (list[str], optional): A list of previously used tags. Defaults to None.
+
+    Returns:
+        str: The chosen tag, or "unknown" if no topic is clear.
+    """
+
+    final = ""
+
+    prompt_1 = f"""
+    You are a helpful assistant for tagging text messages. Students in a university are busy and need information at a glance.
+    Given the following text message, generate the BEST topic tag that would match the content of the message.
+
+    Text message: {message}
+
+    Return ONLY a single topic, do not add any other text.
+    """
+
+    first_response = model.generate_content(prompt_1).text.strip()
+
+
+    # If the first response is not clear, ask for more information
+    if previous_tags:
+        prompt_2 = f"""
+        If the tag "{first_response}" is similar to any of the following previously generated tags: {', '.join(previous_tags) if previous_tags else ""}, use the previous tag that is most similar to the content of the message. Otherwise, keep {first_response}. 
+        Return ONLY the final single topic, do not add any other text. 
+        """
+
+
+        second_response = model.generate_content(prompt_2).text.strip()
+        final = second_response
+    else:
+        final = first_response
+
+    try:
+        print(final)
+        return final
+    except Exception as e:
+       print(f"An error occurred: {e}")
+       return "unknown"
+
+
+
 
 
 if __name__ == "__main__":

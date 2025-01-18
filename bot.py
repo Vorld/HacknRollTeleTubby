@@ -6,20 +6,40 @@ from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     ChatMemberHandler,
-    CallbackQueryHandler
+    CallbackQueryHandler,
+    MessageHandler,
+    filters
 )
 
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
-)
-
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logger = logging.getLogger(__name__)
 
 # Load environment variables from .env file
 load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_API_TOKEN")
+MONGOOSE_KEY = os.getenv("MONGOOSE_KEY")
+
+
+from pymongo import MongoClient
+
+uri = "mongodb+srv://admin:" + MONGOOSE_KEY + "@messages.5xaf5.mongodb.net/?retryWrites=true&w=majority&appName=messages"
+
+# Create a new client and connect to the server
+client = MongoClient(uri)
+# Send a ping to confirm a successful connection
+try:
+    client.admin.command('ping')
+    print("Pinged your deployment. You successfully connected to MongoDB!")
+except Exception as e:
+    print(e)
+
+
+db = client["DB"]  # or pick any DB name
+collection = db["Messages"]
+
+
+#  Set up logging
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logger = logging.getLogger(__name__)
 
 async def help(update, context):
     chat_id = update.message.chat_id
@@ -169,6 +189,34 @@ async def selected_channels(update, context):
     await context.bot.send_message(chat_id, " ".join([s for s in selected_channels]))
 
 
+async def store_channel_message(update, context):
+    """
+    Whenever a new message is posted in a channel, store it in MongoDB.
+    """
+    print()
+
+    if update.channel_post:
+        post = update.channel_post
+        channel_name = update.effective_chat.title
+        text = post.text or ""  # message text (if any)
+        date = post.date        # datetime object (UTC)
+
+        # Build the document
+        doc = {
+            "channel_name": channel_name,
+            "text": text,
+            "date": date
+        }
+
+        # Insert the document into your Mongo collection
+        result = collection.insert_one(doc)
+
+        logger.info(
+            "Inserted new message from channel %s (message_id=%s) into MongoDB with _id=%s",
+            channel_name, post.message_id, result.inserted_id
+        )
+
+
 if __name__ == "__main__":
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     application.add_handler(CommandHandler("help", help))
@@ -180,5 +228,9 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("show_channels", show_channels))
     application.add_handler(CommandHandler("selected_channels", selected_channels))
     application.add_handler(CallbackQueryHandler(button_handler))
+
+
+    # Upload every message to ATLAS
+    application.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST, store_channel_message))
 
     application.run_polling(allowed_updates=Update.ALL_TYPES)

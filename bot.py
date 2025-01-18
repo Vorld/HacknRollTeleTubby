@@ -17,7 +17,7 @@ import google.generativeai as genai
 # Load environment variables from .env file
 load_dotenv()
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_API_TOKEN")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 MONGOOSE_KEY = os.getenv("MONGOOSE_KEY")
 GOOGLE_API_KEY = os.getenv("GEMINI_API_KEY")
 
@@ -26,7 +26,7 @@ genai.configure(api_key=GOOGLE_API_KEY)
 model = genai.GenerativeModel('gemini-pro')
 
 
-uri = "mongodb+srv://admin:" + MONGOOSE_KEY + "@messages.5xaf5.mongodb.net/?retryWrites=true&w=majority&appName=messages"
+uri = "mongodb+srv://admin:potato@messages.5xaf5.mongodb.net/?retryWrites=true&w=majority&appName=messages"
 
 # Create a new client and connect to the server
 client = MongoClient(uri)
@@ -59,6 +59,40 @@ async def tags(update, context):
 async def briefing(update, context):
     chat_id = update.message.chat_id
     await context.bot.send_message(chat_id, "briefing!")
+
+async def start(update, context):
+    chat_id = update.message.chat_id
+    bot_description = (
+        "\U0001F916 *Welcome to your Telegram Decluttering Bot!*\n\n"
+        "I help you manage and simplify your Telegram experience by:\n"
+        "\- Reading and organizing messages from your groups and channels.\n"
+        "\- Summarizing discussions to give you quick insights.\n"
+        "\- Tagging messages into categories for easy navigation.\n\n"
+
+
+        "*Available Commands:*\n"
+        "\U0001F4AC /help \- Get help on how to use the bot.\n"
+        "\U0001F4CA /tags \- View all message categories (tags).\n"
+        "\U0001F4DD /briefing \- Get a summary of recent discussions.\n"
+        "\U0001F4E2 /showall \- Show the channels the bot is in.\n"
+        "\U0001F4E5 /selected \- View your selected channels for updates.\n"
+        "\n*In essence*, I'm your one-stop Telegram agent to free you from endless chats and confusion!\n"
+        "Let's get started!"
+    )
+
+    # keyboard = [
+    #     [InlineKeyboardButton("\U0001F4AC Help", callback_data="help")],
+    #     [InlineKeyboardButton("\U0001F4CA View Tags", callback_data="tags")],
+    #     [InlineKeyboardButton("\U0001F4DD Briefing", callback_data="briefing")],
+    #     [InlineKeyboardButton("\U0001F4E2 Show Channels", callback_data="show_channels")]
+    # ]
+    # reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await context.bot.send_message(
+        chat_id,
+        bot_description,
+        parse_mode='Markdown',
+    )
 
 ''' ALL THE CHANNEL TRACKING '''
 
@@ -138,7 +172,7 @@ async def show_channels(update, context):
         f" Moreover it is a member of the groups with IDs {group_ids} "
         f"and administrator in the channels with IDs {channel_ids}."
     )
-
+    print(update)
     chat_id = update.message.chat_id
     selected_channels = context.user_data.get(chat_id, set())  # sus
 
@@ -198,36 +232,52 @@ previous_tags = []
 
 async def store_channel_message(update, context):
     """
-    Whenever a new message is posted in a channel, store it in MongoDB.
+    Stores new messages from channels and groups in MongoDB.
     """
 
-    print(previous_tags)
+    if update.channel_post or update.message:
+        # Handle channel posts
+        if update.channel_post:
+            post = update.channel_post
+            chat_type = "channel"
+            sender = post.sender_chat.title if post.sender_chat else "Unknown"
+        
+        # Handle group messages
+        elif update.message and update.effective_chat.type in ["group", "supergroup"]:
+            post = update.message
+            chat_type = "group"
+            sender = post.from_user.full_name if post.from_user else "Unknown"
+        
+        else:
+            return  # Ignore other types of messages
 
-    if update.channel_post:
-        post = update.channel_post
-        channel_name = update.effective_chat.title
-        text = post.text or ""  # message text (if any)
-        date = post.date        # datetime object (UTC)
+        chat_name = update.effective_chat.title
+        text = post.text or post.caption or ""  # Include captions for media
+        date = post.date
 
+        # Tag the message
         tag = tag_message(text, previous_tags)
 
-        # Build the document
+        # Build the document for MongoDB
         doc = {
-            "channel_name": channel_name,
+            "chat_name": chat_name,
+            "chat_type": chat_type,  # New field: 'channel' or 'group'
+            "sender": sender,        # New field: sender's name
             "text": text,
             "date": date,
             "tag": tag
         }
 
-        if (tag not in previous_tags):
+        # Update tags if it's new
+        if tag not in previous_tags:
             previous_tags.append(tag)
 
-        # Insert the document into your Mongo collection
+        # Insert the document into the MongoDB collection
         result = collection.insert_one(doc)
 
         logger.info(
-            "Inserted new message from channel %s (message_id=%s) into MongoDB with _id=%s",
-            channel_name, post.message_id, result.inserted_id
+            "Inserted new message from %s (%s) into MongoDB with _id=%s",
+            chat_name, chat_type, result.inserted_id
         )
 
 
@@ -288,11 +338,12 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("help", help))
     application.add_handler(CommandHandler("tags", tags))
     application.add_handler(CommandHandler("briefing", briefing))
+    application.add_handler(CommandHandler("start", start))
 
     # Keep track of which chats the bot is in
     application.add_handler(ChatMemberHandler(track_chats, ChatMemberHandler.MY_CHAT_MEMBER))
-    application.add_handler(CommandHandler("show_channels", show_channels))
-    application.add_handler(CommandHandler("selected_channels", selected_channels))
+    application.add_handler(CommandHandler("showall", show_channels))
+    application.add_handler(CommandHandler("selected", selected_channels))
     application.add_handler(CallbackQueryHandler(button_handler))
 
 

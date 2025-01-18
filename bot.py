@@ -1,11 +1,12 @@
 import logging
 import os
 from dotenv import load_dotenv
-from telegram import Chat, ChatMember, ChatMemberUpdated, Update
+from telegram import Chat, ChatMember, ChatMemberUpdated, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
-    ChatMemberHandler
+    ChatMemberHandler,
+    CallbackQueryHandler
 )
 
 logging.basicConfig(
@@ -106,13 +107,66 @@ async def show_channels(update, context):
     user_ids = ", ".join(str(uid) for uid in context.bot_data.setdefault("user_ids", set()))
     group_ids = ", ".join(str(gid) for gid in context.bot_data.setdefault("group_ids", set()))
     channel_ids = ", ".join(str(cid) for cid in context.bot_data.setdefault("channel_names", set()))
-    
+
     text = (
         f"@{context.bot.username} is currently in a conversation with the user IDs {user_ids}."
         f" Moreover it is a member of the groups with IDs {group_ids} "
         f"and administrator in the channels with IDs {channel_ids}."
     )
-    await update.effective_message.reply_text(text)
+
+    chat_id = update.message.chat_id
+    selected_channels = context.user_data.get(chat_id, set())  # sus
+
+    channel_names = list(context.bot_data.setdefault("channel_names", set()))
+
+
+    if not channel_names:
+        await update.effective_message.reply_text("No channels available.")
+        return 
+
+    keyboard = [[InlineKeyboardButton(f"{'✅' if channel in selected_channels else '➖'} {channel}",callback_data=f"toggle_{channel}")] for channel in channel_names]
+    
+    # Add a submit button
+    keyboard.append([InlineKeyboardButton("✅ Submit", callback_data="submit_selection")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.effective_message.reply_text("Select channels:", reply_markup=reply_markup)
+
+
+async def button_handler(update, context):
+    """Handles button clicks for selecting multiple channels."""
+    query = update.callback_query
+    chat_id = query.message.chat_id
+    user_selection = context.user_data.setdefault(chat_id, set())
+
+    action, value = query.data.split("_", 1)
+
+    if action == "toggle":
+        if value in user_selection:
+            user_selection.remove(value)
+        else:
+            user_selection.add(value)
+
+        # Update the buttons dynamically
+        await show_channels(update, context)
+
+    elif action == "submit":
+        if not user_selection:
+            await query.edit_message_text("No channels selected!")
+        else:
+            selected_list = "\n".join(user_selection)
+            await query.edit_message_text(f"✅ Selected Channels:\n{selected_list}")
+
+
+async def selected_channels(update, context):
+    chat_id = update.message.chat_id
+    selected_channels = context.user_data.get(chat_id, set())
+
+    if not selected_channels:
+        await context.bot.send_message(chat_id, "Woops, no channels selected.")
+        return
+
+    await context.bot.send_message(chat_id, " ".join([s for s in selected_channels]))
 
 
 if __name__ == "__main__":
@@ -121,8 +175,10 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("tags", tags))
     application.add_handler(CommandHandler("briefing", briefing))
 
-        # Keep track of which chats the bot is in
+    # Keep track of which chats the bot is in
     application.add_handler(ChatMemberHandler(track_chats, ChatMemberHandler.MY_CHAT_MEMBER))
     application.add_handler(CommandHandler("show_channels", show_channels))
+    application.add_handler(CommandHandler("selected_channels", selected_channels))
+    application.add_handler(CallbackQueryHandler(button_handler))
 
     application.run_polling(allowed_updates=Update.ALL_TYPES)

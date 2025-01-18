@@ -56,9 +56,79 @@ async def tags(update, context):
     chat_id = update.message.chat_id
     await context.bot.send_message(chat_id, "tags!")
 
+
 async def briefing(update, context):
     chat_id = update.message.chat_id
-    await context.bot.send_message(chat_id, "briefing!")
+    selected_channels = context.user_data.get(chat_id, set())
+    print(selected_channels)
+    if not selected_channels:
+        await context.bot.send_message(chat_id, "No channels or groups selected. Use /showall to select them.")
+        return
+
+    # Provide options for summarizing selected groups/channels
+    keyboard = [
+        [InlineKeyboardButton(f"Summarize Last 24 Hours - {channel}", callback_data=f"briefing_24h_{channel}")]
+        for channel in selected_channels
+    ] + [
+        [InlineKeyboardButton(f"Summarize Last 100 Messages - {channel}", callback_data=f"briefing_100_{channel}")]
+        for channel in selected_channels
+    ]
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await context.bot.send_message(
+        chat_id,
+        "Choose how you'd like to summarize messages for each selected group/channel:",
+        reply_markup=reply_markup
+    )
+
+async def fetch_briefing(update, context):
+    query = update.callback_query
+    data = query.data
+    print(data)
+    _, option, channel_id = data.split("_", 2)
+    print("Channel ID", channel_id)
+    _, channel_id = channel_id.split("_", 1)
+    from datetime import datetime, timedelta
+    time_limit = datetime.now() - timedelta(hours=24)
+
+    if option == "24h":
+        query_filter = {"chat_id": int(channel_id), "date": {"$gte": time_limit}}
+        result = collection.find(query_filter).sort("date", -1)
+    elif option == "100":
+        query_filter = {"chat_id": int(channel_id)}
+        result = collection.find(query_filter).sort("date", -1).limit(100)
+    else:
+        await query.answer("Invalid option.")
+        return
+
+    messages = [doc['text'] for doc in result if 'text' in doc]
+
+    if not messages:
+        await query.answer("No messages found to summarize.")
+        return
+
+    # Prepare the prompt for Gemini
+    combined_messages = "\n".join(messages)
+    prompt = f"Summarize the following messages into a concise summary highlighting key points:\n\n{combined_messages}"
+
+    try:
+        # Generate the summary using Gemini
+        summary_response = model.generate_content(prompt)
+        summary = summary_response.text.strip()
+        
+        if not summary:
+            summary = "I couldn't generate a summary for these messages."
+        
+        # Send the summary back to the user
+        await context.bot.send_message(query.message.chat_id, f"\U0001F4DD *Summary:*\n{summary}", parse_mode='Markdown')
+    except Exception as e:
+        print(f"Error during summarization: {e}")
+        await context.bot.send_message(query.message.chat_id, "An error occurred while generating the summary.")
+
+    await query.answer("Summary generated.")
+
+
 
 async def start(update, context):
     chat_id = update.message.chat_id
@@ -160,36 +230,58 @@ async def track_chats(update, context):
         logger.info("%s removed the bot from the channel %s", cause_name, chat.title)
         context.bot_data.setdefault("channel_ids", set()).discard(chat.id)
         
-
 async def show_channels(update, context):
-    """Shows which chats the bot is in"""
-    user_ids = ", ".join(str(uid) for uid in context.bot_data.setdefault("user_ids", set()))
-    group_ids = ", ".join(str(gid) for gid in context.bot_data.setdefault("group_ids", set()))
-    channel_ids = ", ".join(str(cid) for cid in context.bot_data.setdefault("channel_names", set()))
+    """Shows which chats the bot is in, grouped by user, group, and channel using only IDs."""
+    user_ids = list(context.bot_data.setdefault("user_ids", set()))
+    group_ids = list(context.bot_data.setdefault("group_ids", set()))
+    channel_ids = list(context.bot_data.setdefault("channel_ids", set()))
 
     text = (
-        f"@{context.bot.username} is currently in a conversation with the user IDs {user_ids}."
-        f" Moreover it is a member of the groups with IDs {group_ids} "
-        f"and administrator in the channels with IDs {channel_ids}."
+        f"@{context.bot.username} is currently in a conversation with the following IDs:\n\n"
+        f"\U0001F464 *Users:* {', '.join(map(str, user_ids)) or 'None'}\n"
+        f"\U0001F465 *Groups:* {', '.join(map(str, group_ids)) or 'None'}\n"
+        f"\U0001F4E2 *Channels:* {', '.join(map(str, channel_ids)) or 'None'}\n"
     )
-    print(update)
-    chat_id = update.message.chat_id
-    selected_channels = context.user_data.get(chat_id, set())  # sus
-
-    channel_names = list(context.bot_data.setdefault("channel_names", set()))
-
-
-    if not channel_names:
-        await update.effective_message.reply_text("No channels available.")
-        return 
-
-    keyboard = [[InlineKeyboardButton(f"{'✅' if channel in selected_channels else '➖'} {channel}",callback_data=f"toggle_{channel}")] for channel in channel_names]
     
+    chat_id = update.message.chat_id
+    selected_chats = context.user_data.get(chat_id, set())
+
+    if not group_ids and not channel_ids:
+        await context.bot.send_message(chat_id, "No groups or channels available.")
+        return
+
+    # Create separate sections for groups and channels using IDs only
+    keyboard = []
+
+    if group_ids:
+        keyboard.append([InlineKeyboardButton("\U0001F465 Groups", callback_data="groups_header")])
+        keyboard.extend(
+            [
+                [InlineKeyboardButton(f"{'✅' if str(group) in selected_chats else '➖'} Group {group}", callback_data=f"toggle_group_{group}")]
+                for group in group_ids
+            ]
+        )
+    
+    if channel_ids:
+        keyboard.append([InlineKeyboardButton("\U0001F4E2 Channels", callback_data="channels_header")])
+        keyboard.extend(
+            [
+                [InlineKeyboardButton(f"{'✅' if str(channel) in selected_chats else '➖'} Channel {channel}", callback_data=f"toggle_channel_{channel}")]
+                for channel in channel_ids
+            ]
+        )
+
     # Add a submit button
     keyboard.append([InlineKeyboardButton("✅ Submit", callback_data="submit_selection")])
-    
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.effective_message.reply_text("Select channels:", reply_markup=reply_markup)
+
+    await context.bot.send_message(
+        chat_id,
+        text,
+        parse_mode='Markdown',
+        reply_markup=reply_markup
+    )
+
 
 
 async def button_handler(update, context):
@@ -234,25 +326,23 @@ async def store_channel_message(update, context):
     """
     Stores new messages from channels and groups in MongoDB.
     """
-
     if update.channel_post or update.message:
         # Handle channel posts
         if update.channel_post:
             post = update.channel_post
             chat_type = "channel"
             sender = post.sender_chat.title if post.sender_chat else "Unknown"
-        
         # Handle group messages
         elif update.message and update.effective_chat.type in ["group", "supergroup"]:
             post = update.message
             chat_type = "group"
             sender = post.from_user.full_name if post.from_user else "Unknown"
-        
         else:
             return  # Ignore other types of messages
 
         chat_name = update.effective_chat.title
-        text = post.text or post.caption or ""  # Include captions for media
+        chat_id = update.effective_chat.id  # Store the chat ID
+        text = post.text or post.caption or ""
         date = post.date
 
         # Tag the message
@@ -261,8 +351,9 @@ async def store_channel_message(update, context):
         # Build the document for MongoDB
         doc = {
             "chat_name": chat_name,
-            "chat_type": chat_type,  # New field: 'channel' or 'group'
-            "sender": sender,        # New field: sender's name
+            "chat_id": chat_id,  # New field: chat ID
+            "chat_type": chat_type,
+            "sender": sender,
             "text": text,
             "date": date,
             "tag": tag
@@ -276,10 +367,9 @@ async def store_channel_message(update, context):
         result = collection.insert_one(doc)
 
         logger.info(
-            "Inserted new message from %s (%s) into MongoDB with _id=%s",
-            chat_name, chat_type, result.inserted_id
+            "Inserted new message from %s (ID: %s) into MongoDB with _id=%s",
+            chat_name, chat_id, result.inserted_id
         )
-
 
 
 
@@ -344,10 +434,13 @@ if __name__ == "__main__":
     application.add_handler(ChatMemberHandler(track_chats, ChatMemberHandler.MY_CHAT_MEMBER))
     application.add_handler(CommandHandler("showall", show_channels))
     application.add_handler(CommandHandler("selected", selected_channels))
+    application.add_handler(CallbackQueryHandler(fetch_briefing, pattern="^briefing_"))
+
     application.add_handler(CallbackQueryHandler(button_handler))
 
 
     # Upload every message to ATLAS
-    application.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST, store_channel_message))
+# General message handler without any filters
+    application.add_handler(MessageHandler(filters.ALL, store_channel_message))
 
     application.run_polling(allowed_updates=Update.ALL_TYPES)

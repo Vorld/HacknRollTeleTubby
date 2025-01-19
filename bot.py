@@ -90,20 +90,16 @@ async def fetch_briefing(update, context):
     _, option, channel_name = data.split("_", 2)
     print("Channel Name", channel_name)
     _, channel_name = channel_name.split("_", 1)
-    # print(data)
-    _, option, channel_name = data.split("_", 2)
-    print("Channel Name", channel_name)
-    _, channel_name = channel_name.split("_", 1)
+
     from datetime import datetime, timedelta
     time_limit = datetime.now() - timedelta(hours=24)
 
     if option == "24h":
         query_filter = {"chat_name": channel_name, "date": {"$gte": time_limit}}
-        query_filter = {"chat_name": channel_name, "date": {"$gte": time_limit}}
         result = collection.find(query_filter).sort("date", -1)
     elif option == "100":
         query_filter = {"chat_name": channel_name}
-        query_filter = {"chat_name": channel_name}
+
         result = collection.find(query_filter).sort("date", -1).limit(100)
     else:
         await query.answer("Invalid option.")
@@ -253,14 +249,11 @@ async def show_channels(update, context):
         f"\U0001F464 *Users:* {', '.join(map(str, user_ids)) or 'None'}\n"
         f"\U0001F465 *Groups:* {', '.join(map(str, group_names)) or 'None'}\n"
         f"\U0001F4E2 *Channels:* {', '.join(map(str, channel_names)) or 'None'}\n"
-        f"\U0001F465 *Groups:* {', '.join(map(str, group_names)) or 'None'}\n"
-        f"\U0001F4E2 *Channels:* {', '.join(map(str, channel_names)) or 'None'}\n"
     )
     
     chat_id = update.message.chat_id
     selected_chats = context.user_data.get(chat_id, set())
 
-    if not group_names and not channel_names:
     if not group_names and not channel_names:
         await context.bot.send_message(chat_id, "No groups or channels available.")
         return
@@ -274,7 +267,6 @@ async def show_channels(update, context):
             [
                 [InlineKeyboardButton(f"{'✅' if str(group) in selected_chats else '➖'} Group {group}", callback_data=f"toggle_group_{group}")]
                 for group in group_names
-                for group in group_names
             ]
         )
     
@@ -283,7 +275,7 @@ async def show_channels(update, context):
         keyboard.extend(
             [
                 [InlineKeyboardButton(f"{'✅' if str(channel) in selected_chats else '➖'} Channel {channel}", callback_data=f"toggle_channel_{channel}")]
-                for channel in channel_names
+
                 for channel in channel_names
             ]
         )

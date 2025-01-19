@@ -419,7 +419,36 @@ def tag_message(message, previous_tags=None):
        print(f"An error occurred: {e}")
        return "unknown"
 
+async def show_tags(update, context):
+    """Fetch all unique tags from MongoDB and display them as buttons."""
+    unique_tags = await collection.distinct("tag")
 
+    if not unique_tags:
+        await update.message.reply_text("No tags found.")
+        return
+
+    keyboard = [[InlineKeyboardButton(tag, callback_data=f"tag_{tag}")] for tag in unique_tags]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await update.message.reply_text("Choose a tag:", reply_markup=reply_markup)
+
+async def show_messages_for_tag(update, context):
+    """Fetch and display messages that match the selected tag."""
+    query = update.callback_query
+    await query.answer()
+
+    tag = query.data.split("_")[1]
+    messages = await collection.find({"tag": tag}).to_list(length=50)  # Limit to 50 messages
+
+    if not messages:
+        await query.message.reply_text(f"No messages found for tag: {tag}.")
+        return
+
+    response = f"Messages for tag: **{tag}**\n\n"
+    for msg in messages:
+        response += f"📢 *{msg['chat_name']}* | 👤 *{msg['sender']}*\n📝 {msg['text']}\n\n"
+
+    await query.message.reply_text(response[:4000], parse_mode="Markdown")
 
 
 

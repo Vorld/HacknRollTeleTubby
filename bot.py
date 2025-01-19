@@ -1,7 +1,7 @@
 import logging
 import os
 from dotenv import load_dotenv
-from telegram import Chat, ChatMember, ChatMemberUpdated, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import Chat, ChatMember, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -17,7 +17,7 @@ import google.generativeai as genai
 # Load environment variables from .env file
 load_dotenv()
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_API_TOKEN")
 MONGOOSE_KEY = os.getenv("MONGOOSE_KEY")
 GOOGLE_API_KEY = os.getenv("GEMINI_API_KEY")
 
@@ -26,7 +26,7 @@ genai.configure(api_key=GOOGLE_API_KEY)
 model = genai.GenerativeModel('gemini-pro')
 
 
-uri = "mongodb+srv://admin:potato@messages.5xaf5.mongodb.net/?retryWrites=true&w=majority&appName=messages"
+uri = "mongodb+srv://admin:" + MONGOOSE_KEY + "@messages.5xaf5.mongodb.net/?retryWrites=true&w=majority&appName=messages"
 
 # Create a new client and connect to the server
 client = MongoClient(uri)
@@ -85,18 +85,18 @@ async def briefing(update, context):
 async def fetch_briefing(update, context):
     query = update.callback_query
     data = query.data
-    print(data)
-    _, option, channel_id = data.split("_", 2)
-    print("Channel ID", channel_id)
-    _, channel_id = channel_id.split("_", 1)
+    # print(data)
+    _, option, channel_name = data.split("_", 2)
+    print("Channel Name", channel_name)
+    _, channel_name = channel_name.split("_", 1)
     from datetime import datetime, timedelta
     time_limit = datetime.now() - timedelta(hours=24)
 
     if option == "24h":
-        query_filter = {"chat_id": int(channel_id), "date": {"$gte": time_limit}}
+        query_filter = {"chat_name": channel_name, "date": {"$gte": time_limit}}
         result = collection.find(query_filter).sort("date", -1)
     elif option == "100":
-        query_filter = {"chat_id": int(channel_id)}
+        query_filter = {"chat_name": channel_name}
         result = collection.find(query_filter).sort("date", -1).limit(100)
     else:
         await query.answer("Invalid option.")
@@ -164,7 +164,7 @@ async def start(update, context):
         parse_mode='Markdown',
     )
 
-''' ALL THE CHANNEL TRACKING '''
+''' ALL THE CHANNEL TRACKING FROM https://docs.python-telegram-bot.org/en/stable/examples.html#examples-chatmemberbot'''
 
 def extract_status_change(chat_member_update):
     """Takes a ChatMemberUpdated instance and extracts whether the 'old_chat_member' was a member
@@ -234,19 +234,21 @@ async def show_channels(update, context):
     """Shows which chats the bot is in, grouped by user, group, and channel using only IDs."""
     user_ids = list(context.bot_data.setdefault("user_ids", set()))
     group_ids = list(context.bot_data.setdefault("group_ids", set()))
+    group_names = list(context.bot_data.setdefault("group_names", set()))
     channel_ids = list(context.bot_data.setdefault("channel_ids", set()))
+    channel_names = list(context.bot_data.setdefault("channel_names", set()))
 
     text = (
         f"@{context.bot.username} is currently in a conversation with the following IDs:\n\n"
         f"\U0001F464 *Users:* {', '.join(map(str, user_ids)) or 'None'}\n"
-        f"\U0001F465 *Groups:* {', '.join(map(str, group_ids)) or 'None'}\n"
-        f"\U0001F4E2 *Channels:* {', '.join(map(str, channel_ids)) or 'None'}\n"
+        f"\U0001F465 *Groups:* {', '.join(map(str, group_names)) or 'None'}\n"
+        f"\U0001F4E2 *Channels:* {', '.join(map(str, channel_names)) or 'None'}\n"
     )
     
     chat_id = update.message.chat_id
     selected_chats = context.user_data.get(chat_id, set())
 
-    if not group_ids and not channel_ids:
+    if not group_names and not channel_names:
         await context.bot.send_message(chat_id, "No groups or channels available.")
         return
 
@@ -258,7 +260,7 @@ async def show_channels(update, context):
         keyboard.extend(
             [
                 [InlineKeyboardButton(f"{'✅' if str(group) in selected_chats else '➖'} Group {group}", callback_data=f"toggle_group_{group}")]
-                for group in group_ids
+                for group in group_names
             ]
         )
     
@@ -267,7 +269,7 @@ async def show_channels(update, context):
         keyboard.extend(
             [
                 [InlineKeyboardButton(f"{'✅' if str(channel) in selected_chats else '➖'} Channel {channel}", callback_data=f"toggle_channel_{channel}")]
-                for channel in channel_ids
+                for channel in channel_names
             ]
         )
 
@@ -421,13 +423,11 @@ def tag_message(message, previous_tags=None):
 
 async def show_tags(update, context):
     """Fetch all unique tags from MongoDB and display them as buttons."""
-    unique_tags = await collection.distinct("tag")
-
-    if not unique_tags:
+    if not previous_tags:
         await update.message.reply_text("No tags found.")
         return
 
-    keyboard = [[InlineKeyboardButton(tag, callback_data=f"tag_{tag}")] for tag in unique_tags]
+    keyboard = [[InlineKeyboardButton(tag, callback_data=f"tag_{tag}")] for tag in previous_tags]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     await update.message.reply_text("Choose a tag:", reply_markup=reply_markup)
@@ -455,7 +455,7 @@ async def show_messages_for_tag(update, context):
 if __name__ == "__main__":
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     application.add_handler(CommandHandler("help", help))
-    application.add_handler(CommandHandler("tags", tags))
+    application.add_handler(CommandHandler("tags", show_tags))
     application.add_handler(CommandHandler("briefing", briefing))
     application.add_handler(CommandHandler("start", start))
 
@@ -469,7 +469,7 @@ if __name__ == "__main__":
 
 
     # Upload every message to ATLAS
-# General message handler without any filters
+    # General message handler without any filters
     application.add_handler(MessageHandler(filters.ALL, store_channel_message))
 
     application.run_polling(allowed_updates=Update.ALL_TYPES)

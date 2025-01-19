@@ -2,6 +2,7 @@ import logging
 import os
 from dotenv import load_dotenv
 from telegram import Chat, ChatMember, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import Chat, ChatMember, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -17,7 +18,7 @@ import google.generativeai as genai
 # Load environment variables from .env file
 load_dotenv()
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_API_TOKEN")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 MONGOOSE_KEY = os.getenv("MONGOOSE_KEY")
 GOOGLE_API_KEY = os.getenv("GEMINI_API_KEY")
 
@@ -89,13 +90,19 @@ async def fetch_briefing(update, context):
     _, option, channel_name = data.split("_", 2)
     print("Channel Name", channel_name)
     _, channel_name = channel_name.split("_", 1)
+    # print(data)
+    _, option, channel_name = data.split("_", 2)
+    print("Channel Name", channel_name)
+    _, channel_name = channel_name.split("_", 1)
     from datetime import datetime, timedelta
     time_limit = datetime.now() - timedelta(hours=24)
 
     if option == "24h":
         query_filter = {"chat_name": channel_name, "date": {"$gte": time_limit}}
+        query_filter = {"chat_name": channel_name, "date": {"$gte": time_limit}}
         result = collection.find(query_filter).sort("date", -1)
     elif option == "100":
+        query_filter = {"chat_name": channel_name}
         query_filter = {"chat_name": channel_name}
         result = collection.find(query_filter).sort("date", -1).limit(100)
     else:
@@ -164,6 +171,7 @@ async def start(update, context):
         parse_mode='Markdown',
     )
 
+''' ALL THE CHANNEL TRACKING FROM https://docs.python-telegram-bot.org/en/stable/examples.html#examples-chatmemberbot'''
 ''' ALL THE CHANNEL TRACKING FROM https://docs.python-telegram-bot.org/en/stable/examples.html#examples-chatmemberbot'''
 
 def extract_status_change(chat_member_update):
@@ -235,12 +243,16 @@ async def show_channels(update, context):
     user_ids = list(context.bot_data.setdefault("user_ids", set()))
     group_ids = list(context.bot_data.setdefault("group_ids", set()))
     group_names = list(context.bot_data.setdefault("group_names", set()))
+    group_names = list(context.bot_data.setdefault("group_names", set()))
     channel_ids = list(context.bot_data.setdefault("channel_ids", set()))
+    channel_names = list(context.bot_data.setdefault("channel_names", set()))
     channel_names = list(context.bot_data.setdefault("channel_names", set()))
 
     text = (
         f"@{context.bot.username} is currently in a conversation with the following IDs:\n\n"
         f"\U0001F464 *Users:* {', '.join(map(str, user_ids)) or 'None'}\n"
+        f"\U0001F465 *Groups:* {', '.join(map(str, group_names)) or 'None'}\n"
+        f"\U0001F4E2 *Channels:* {', '.join(map(str, channel_names)) or 'None'}\n"
         f"\U0001F465 *Groups:* {', '.join(map(str, group_names)) or 'None'}\n"
         f"\U0001F4E2 *Channels:* {', '.join(map(str, channel_names)) or 'None'}\n"
     )
@@ -249,17 +261,19 @@ async def show_channels(update, context):
     selected_chats = context.user_data.get(chat_id, set())
 
     if not group_names and not channel_names:
+    if not group_names and not channel_names:
         await context.bot.send_message(chat_id, "No groups or channels available.")
         return
 
     # Create separate sections for groups and channels using IDs only
     keyboard = []
-
+    print("Group IDs", group_ids)
     if group_ids:
         keyboard.append([InlineKeyboardButton("\U0001F465 Groups", callback_data="groups_header")])
         keyboard.extend(
             [
                 [InlineKeyboardButton(f"{'✅' if str(group) in selected_chats else '➖'} Group {group}", callback_data=f"toggle_group_{group}")]
+                for group in group_names
                 for group in group_names
             ]
         )
@@ -269,6 +283,7 @@ async def show_channels(update, context):
         keyboard.extend(
             [
                 [InlineKeyboardButton(f"{'✅' if str(channel) in selected_chats else '➖'} Channel {channel}", callback_data=f"toggle_channel_{channel}")]
+                for channel in channel_names
                 for channel in channel_names
             ]
         )
@@ -287,6 +302,7 @@ async def show_channels(update, context):
 
 
 async def button_handler(update, context):
+    print("hi bro what it up")
     """Handles button clicks for selecting multiple channels."""
     query = update.callback_query
     chat_id = query.message.chat_id
@@ -422,39 +438,94 @@ def tag_message(message, previous_tags=None):
        return "unknown"
 
 async def show_tags(update, context):
-    """Fetch all unique tags from MongoDB and display them as buttons."""
-    if not previous_tags:
-        await update.message.reply_text("No tags found.")
+    """Fetch all tags from the user's selected groups and channels, and display them as buttons."""
+    chat_id = update.message.chat_id
+
+    # Fetch selected chats from the user context
+    selected_chats = context.user_data.get(chat_id, set())
+
+    if not selected_chats:
+        await update.message.reply_text("You have not selected any groups or channels to track tags.")
         return
 
-    keyboard = [[InlineKeyboardButton(tag, callback_data=f"tag_{tag}")] for tag in previous_tags]
+    # Segregate into groups and channels
+    selected_groups = [chat.split("_", 1)[1] for chat in selected_chats if chat.startswith("group_")]
+    selected_channels = [chat.split("_", 1)[1] for chat in selected_chats if chat.startswith("channel_")]
+
+    # Fetch unique tags for the selected groups and channels
+    tags = collection.distinct("tag", {"chat_name": {"$in": selected_groups + selected_channels}})
+    if not tags:
+        await update.message.reply_text("No tags found for the selected groups or channels.")
+        return
+
+    # Create inline buttons for each tag
+    keyboard = [[InlineKeyboardButton(tag, callback_data=f"tag_{tag}")] for tag in tags]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    await update.message.reply_text("Choose a tag:", reply_markup=reply_markup)
+    await update.message.reply_text("Select a tag to view related messages:", reply_markup=reply_markup)
+
+
 
 async def show_messages_for_tag(update, context):
     """Fetch and display messages that match the selected tag."""
     query = update.callback_query
     await query.answer()
 
-    tag = query.data.split("_")[1]
-    messages = await collection.find({"tag": tag}).to_list(length=50)  # Limit to 50 messages
+    tag = query.data.split("_", 1)[1]  # Extract the tag from the callback data
+    chat_id = query.message.chat_id
 
-    if not messages:
+    # Fetch selected chats from the user context
+    selected_chats = context.user_data.get(chat_id, set())
+
+    if not selected_chats:
+        await query.message.reply_text("No groups or channels selected to fetch messages.")
+        return
+
+    # Segregate into groups and channels
+    selected_groups = [chat.split("_", 1)[1] for chat in selected_chats if chat.startswith("group_")]
+    selected_channels = [chat.split("_", 1)[1] for chat in selected_chats if chat.startswith("channel_")]
+
+    # Fetch messages from MongoDB for the selected tag
+    messages = (
+        collection.find({"tag": tag, "chat_name": {"$in": selected_groups + selected_channels}})
+        .sort("date", -1)
+        .limit(50)  # Limit to 50 messages
+    )
+
+    message_list = list(messages)
+
+    if not message_list:
         await query.message.reply_text(f"No messages found for tag: {tag}.")
         return
 
+    # Format and display the messages
     response = f"Messages for tag: **{tag}**\n\n"
-    for msg in messages:
-        response += f"📢 *{msg['chat_name']}* | 👤 *{msg['sender']}*\n📝 {msg['text']}\n\n"
+    for msg in message_list:
+        group_or_channel = f"📢 *{msg.get('chat_name', 'Unknown')}*"  # Group or channel name
+        sender = f"👤 {msg.get('sender', 'Unknown')}"  # Sender's name
+        text = f"📝 {msg.get('text', 'No text available')}"  # Message text
+        date = f"📅 {msg.get('date', '').strftime('%Y-%m-%d %H:%M:%S')}" if 'date' in msg else ""
 
-    await query.message.reply_text(response[:4000], parse_mode="Markdown")
+        # Append each message to the response
+        response += f"{group_or_channel} | {sender}\n{text}\n{date}\n\n"
+
+        # Handle Telegram's message length limit
+        if len(response) > 3800:
+            await query.message.reply_text(response[:4000], parse_mode="Markdown")
+            response = ""  # Reset response to handle overflow
+
+    if response:  # Send any remaining messages
+        await query.message.reply_text(response[:4000], parse_mode="Markdown")
 
 
+
+
+# Add these handlers to the bot
 
 if __name__ == "__main__":
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     application.add_handler(CommandHandler("help", help))
+    application.add_handler(CommandHandler("tags", show_tags))
     application.add_handler(CommandHandler("tags", show_tags))
     application.add_handler(CommandHandler("briefing", briefing))
     application.add_handler(CommandHandler("start", start))
@@ -464,11 +535,15 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("showall", show_channels))
     application.add_handler(CommandHandler("selected", selected_channels))
     application.add_handler(CallbackQueryHandler(fetch_briefing, pattern="^briefing_"))
-
+    application.add_handler(CallbackQueryHandler(show_messages_for_tag, pattern="^tag_"))
     application.add_handler(CallbackQueryHandler(button_handler))
+
+    application.add_handler(CommandHandler("tags", show_tags))
+
 
 
     # Upload every message to ATLAS
+    # General message handler without any filters
     # General message handler without any filters
     application.add_handler(MessageHandler(filters.ALL, store_channel_message))
 
